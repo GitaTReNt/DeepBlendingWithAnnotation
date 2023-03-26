@@ -62,7 +62,7 @@ mask_img[mask_img>0] = 1
 # Make Canvas Mask
 # 画布掩码：生成一个与目标图像尺寸一致的全0的numpy数组，并按照给定的xy，把mask图像的numpy数组填入全零的数组中的指定位置，
 # 其次使用numpy2tensor函数把数组变换成张量，放入模型中计算。
-# 最后使用.view()函数，把canvas_mask的size变为（3，ts，ts）；.repeat（）函数是为了尽可了能保留更多原始数据。
+# 最后使用.view()函数，把canvas_mask的size变为（3，ts，ts）；.repeat（）函数是对张量进行复制（复制后的行数，复制后的列数）。
 canvas_mask = make_canvas_mask(x_start, y_start, target_img, mask_img)
 canvas_mask = numpy2tensor(canvas_mask, gpu_id)
 canvas_mask = canvas_mask.squeeze(0).repeat(3,1).view(3,ts,ts).unsqueeze(0)
@@ -211,7 +211,7 @@ target_img = np.array(Image.open(target_file).convert('RGB').resize((ts, ts)))
 first_pass_img = torch.from_numpy(first_pass_img).unsqueeze(0).transpose(1,3).transpose(2,3).float().to(gpu_id)
 target_img = torch.from_numpy(target_img).unsqueeze(0).transpose(1,3).transpose(2,3).float().to(gpu_id)
 
-first_pass_img = first_pass_img.contiguous()
+first_pass_img = first_pass_img.contiguous()#contiguous用于保存更多数据细节
 target_img = target_img.contiguous()
 
 # Define LBFGS optimizer
@@ -230,13 +230,14 @@ while run[0] <= num_steps:
         # Compute Loss Loss    
         target_features_style = vgg(mean_shift(target_img))
         target_gram_style = [gram_matrix(y) for y in target_features_style]
-        blend_features_style = vgg(mean_shift(first_pass_img))
+        blend_features_style = vgg(mean_shift(first_pass_img))#VGG特征
         blend_gram_style = [gram_matrix(y) for y in blend_features_style]
         style_loss = 0
         for layer in range(len(blend_gram_style)):
             style_loss += mse(blend_gram_style[layer], target_gram_style[layer])
         style_loss /= len(blend_gram_style)  
-        style_loss *= style_weight        
+        style_loss *= style_weight
+        #computing the style loss between blend_gram_style and target_gram_style
         
         # Compute Content Loss
         content_features = vgg(mean_shift(first_pass_img))

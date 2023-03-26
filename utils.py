@@ -71,7 +71,8 @@ def compute_gt_gradient(x_start, y_start, source_img, target_img, mask, gpu_id):
     
     # compute target image gradient
     target_img_tensor = torch.from_numpy(target_img).unsqueeze(0).transpose(1,3).transpose(2,3).float().to(gpu_id)
-    red_target_gradient_tensor, green_target_gradient_tensor, blue_target_gradient_tenosr = laplacian_filter_tensor(target_img_tensor, gpu_id)#目标图像的各个channel的梯度
+    red_target_gradient_tensor, green_target_gradient_tensor, blue_target_gradient_tenosr = laplacian_filter_tensor(target_img_tensor, gpu_id)
+    #目标图像的各个channel的梯度
     red_target_gradient = red_target_gradient_tensor.cpu().data.numpy()[0]
     #使用data.numpy()来将张量转换为numpy数组，使用[0]来选择第0个批次的元素
     green_target_gradient = green_target_gradient_tensor.cpu().data.numpy()[0]

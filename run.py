@@ -51,7 +51,7 @@ ts = opt.ts # target image size
 x_start = opt.x; y_start = opt.y # blending location
 
 # Default weights for loss functions in the first pass 默认firstpass权重
-grad_weight = 1e4; style_weight = 1e4; content_weight = 1; tv_weight = 1e-6
+grad_weight = 1e4; style_weight = 1e4; content_weight = 1; tv_weight = 1e-6#总变差损失
 
 # Load Images 加载三张图片
 source_img = np.array(Image.open(source_file).convert('RGB').resize((ss, ss)))
@@ -60,14 +60,14 @@ mask_img = np.array(Image.open(mask_file).convert('L').resize((ss, ss)))
 mask_img[mask_img>0] = 1
 
 # Make Canvas Mask
-# Canvas蒙版：生成一个与目标图像尺寸一致的全0的numpy数组，并按照给定的xy，把mask图像的numpy数组填入全零的数组中的指定位置，
+# 画布掩码：生成一个与目标图像尺寸一致的全0的numpy数组，并按照给定的xy，把mask图像的numpy数组填入全零的数组中的指定位置，
 # 其次使用numpy2tensor函数把数组变换成张量，放入模型中计算。
 # 最后使用.view()函数，把canvas_mask的size变为（3，ts，ts）；.repeat（）函数是为了尽可了能保留更多原始数据。
 canvas_mask = make_canvas_mask(x_start, y_start, target_img, mask_img)
 canvas_mask = numpy2tensor(canvas_mask, gpu_id)
 canvas_mask = canvas_mask.squeeze(0).repeat(3,1).view(3,ts,ts).unsqueeze(0)
 
-# Compute Ground-Truth Gradients 计算
+# Compute Ground-Truth Gradients 计算总的梯度
 gt_gradient = compute_gt_gradient(x_start, y_start, source_img, target_img, mask_img, gpu_id)
 
 # Convert Numpy Images Into Tensors
@@ -82,11 +82,20 @@ mask_img = mask_img.squeeze(0).repeat(3,1).view(3,ss,ss).unsqueeze(0)
 def get_input_optimizer(input_img):
     optimizer = optim.LBFGS([input_img.requires_grad_()])
     return optimizer
+#L-BFGS是一种用于无约束非线性规划问题的优化算法，具有收敛速度快、内存开销少等优点。
+#L-BFGS算法是一种拟牛顿法，它是BFGS算法的一种变形，主要用于无约束非线性规划问题的优化算法。
+#L-BFGS算法的基本思想是：在每次迭代中，利用当前点的梯度信息和历史信息构造一个近似的Hessian矩阵，
+# 然后求解近似的Hessian矩阵的逆与梯度的乘积作为搜索方向。
+#Hessian矩阵是一个二阶偏导数矩阵，它描述了一个函数的局部曲率。
+#在优化算法中，Hessian矩阵可以用于判断一个点是否是极值点，以及确定搜索方向
+#f_{xx}	f_{xy}
+#f_{yx}	f_{yy}的样式 当Hessian矩阵的特征值均为正数时，这个点是一个局部极小值点，搜索方向为梯度的反方向；当特征值均为负数时，这个点是一个局部极大值点，搜索方向为梯度的反方向；
+# 当特征值有正有负时，这个点是一个鞍点，搜索方向为特征值对应的特征向量。
 optimizer = get_input_optimizer(input_img)
 
 # Define Loss Functions
 mse = torch.nn.MSELoss()
-
+#计算预测值和真实值之间的均方误差（MSE），即将每个样本的误差平方求和并取平均值
 # Import VGG network for computing style and content loss
 mean_shift = MeanShift(gpu_id)
 vgg = Vgg16().to(gpu_id)
@@ -101,17 +110,17 @@ while run[0] <= num_steps:
     def closure():
         # Composite Foreground and Background to Make Blended Image
         blend_img = torch.zeros(target_img.shape).to(gpu_id)
-        blend_img = input_img*canvas_mask + target_img*(canvas_mask-1)*(-1) 
-        
+        blend_img = input_img*canvas_mask + target_img*(canvas_mask-1)*(-1)
+        #          （target大小的随机噪声）
         # Compute Laplacian Gradient of Blended Image
-        pred_gradient = laplacian_filter_tensor(blend_img, gpu_id)
+        pred_gradient = laplacian_filter_tensor(blend_img, gpu_id)#红绿蓝梯度
         
         # Compute Gradient Loss
         grad_loss = 0
         for c in range(len(pred_gradient)):
             grad_loss += mse(pred_gradient[c], gt_gradient[c])
         grad_loss /= len(pred_gradient)
-        grad_loss *= grad_weight
+        grad_loss *= grad_weight#grad_loss乘以grad_weight得到最终的损失值
         
         # Compute Style Loss
         target_features_style = vgg(mean_shift(target_img))
@@ -124,25 +133,27 @@ while run[0] <= num_steps:
         for layer in range(len(blend_gram_style)):
             style_loss += mse(blend_gram_style[layer], target_gram_style[layer])
         style_loss /= len(blend_gram_style)  
-        style_loss *= style_weight           
+        style_loss *= style_weight  #style_loss乘以style_weight得到最终的损失值
 
         
         # Compute Content Loss
         blend_obj = blend_img[:,:,int(x_start-source_img.shape[2]*0.5):int(x_start+source_img.shape[2]*0.5), int(y_start-source_img.shape[3]*0.5):int(y_start+source_img.shape[3]*0.5)]
-        source_object_features = vgg(mean_shift(source_img*mask_img))
-        blend_object_features = vgg(mean_shift(blend_obj*mask_img))
+        source_object_features = vgg(mean_shift(source_img*mask_img))#source_img与mask_img相乘后的结果的VGG特征
+        blend_object_features = vgg(mean_shift(blend_obj*mask_img))#blend_obj与mask_img相乘后的结果的VGG特征
         content_loss = content_weight * mse(blend_object_features.relu2_2, source_object_features.relu2_2)
+        #blend_object_features.relu2_2和source_object_features.relu2_2之间的均方误差
         content_loss *= content_weight
         
         # Compute TV Reg Loss
         tv_loss = torch.sum(torch.abs(blend_img[:, :, :, :-1] - blend_img[:, :, :, 1:])) + \
                    torch.sum(torch.abs(blend_img[:, :, :-1, :] - blend_img[:, :, 1:, :]))
         tv_loss *= tv_weight
+        #TV损失是通过计算blend_img沿水平和垂直维度上相邻像素之间的绝对差异来计算的。将绝对差异相加，并将其乘以tv_weight得到loss
         
         # Compute Total Loss and Update Image
         loss = grad_loss + style_loss + content_loss + tv_loss
         optimizer.zero_grad()
-        loss.backward()
+        loss.backward()#总误差
 
         # Write to output to a reconstruction video 
         if opt.save_video:
@@ -174,7 +185,7 @@ while run[0] <= num_steps:
     
     optimizer.step(closure)
 
-# clamp the pixels range into 0 ~ 255
+# clamp the pixels range into 0 ~ 255 限制
 input_img.data.clamp_(0, 255)
 
 # Make the Final Blended Image
